@@ -7,7 +7,7 @@
 
 using namespace std;
 
-const int N = 1024;        //数组长度
+const int N = 2048;        //数组长度
 
 
 __global__ void d_ParallelTest(double *Para)
