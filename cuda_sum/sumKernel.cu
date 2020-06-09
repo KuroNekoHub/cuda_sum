@@ -7,7 +7,7 @@
 
 using namespace std;
 
-const int N = 128;        //数组长度
+const int N = 512;        //数组长度
 
 
 __global__ void d_ParallelTest(double *Para)
@@ -47,5 +47,5 @@ void ParallelTest()
 	cudaDeviceSynchronize();	//同步
 	d_ParaSum = Para[0];	//从累加过后数组的0号元素得出结果
 	cout << " GPU result = " << d_ParaSum << endl;	//显示GPU端结果
-
+	delete[]pcpu;
 }
