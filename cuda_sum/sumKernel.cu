@@ -6,10 +6,10 @@
 #include "inc/helper_cuda.h"
 using namespace std;
 
-const int N = 1e8;        //数组长度
+const int N = 12000;        //数组长度
 
 
-__global__ void d_ParallelTest(double *Para)
+__global__ void d_ParallelTest(float *Para)
 {
 	int tid = threadIdx.x;
 	//----随循环次数的增加，stride逐次翻倍（乘以2）-----------------------------------------------------
@@ -28,14 +28,14 @@ __global__ void d_ParallelTest(double *Para)
 // this kernel computes, per-block, the sum
 // of a block-sized portion of the input
 // using a block-wide reduction
-__global__ void block_sum(double *input,
-	double *per_block_results,
+__global__ void block_sum(float *input,
+	float *per_block_results,
 	const size_t n)
 {
-	extern __shared__ double sdata[];
+	extern __shared__ float sdata[];
 	unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
 	// load input into __shared__ memory //一个线程负责把一个元素从全局内存载入到共享内存
-	double x = 0;
+	float x = 0;
 
 	if (i < n)
 	{
@@ -70,55 +70,61 @@ __global__ void block_sum(double *input,
 extern "C"
 void ParallelTest()
 {
-	
-	double *pcpu = new double[N];
+	float *pcpu = new float[N];
 	for (int i = 0; i<N; i++)
 	{
-		pcpu[i] = 0.1;	//数组赋值
+		pcpu[i] = 1.0;	//数组赋值
 	}
 	//CPU
 	clock_t startTime, endTime;
 	startTime = clock();//计时开始
-	double ParaSum = 0;
+	float ParaSum = 0;
 	for (int i = 0; i<N; i++)
 	{
 		ParaSum += pcpu[i];	//CPU端数组累加
 	}
 	endTime = clock();//计时结束
-	cout << "CPU run time is: " << (double)(endTime - startTime) / CLOCKS_PER_SEC << "s" << endl;
+	cout << "CPU run time is: " << (float)(endTime - startTime) / CLOCKS_PER_SEC << "s" << endl;
 	cout << " CPU result = " << ParaSum << endl;	//显示CPU端结果
 
 	//GPU
 	startTime = clock();//计时开始
-	double *d_input;
-	checkCudaErrors(cudaMalloc((void **)&d_input, sizeof(double) * N));
-	checkCudaErrors(cudaMemcpy(d_input, pcpu, N * sizeof(double), cudaMemcpyHostToDevice));
+	float *d_input;
+	checkCudaErrors(cudaMalloc((void **)&d_input, sizeof(float) * N));
+	checkCudaErrors(cudaMemcpy(d_input, pcpu, N * sizeof(float), cudaMemcpyHostToDevice));
 
 	size_t block_size = 512;//线程块的大小。目前有些gpu的线程块最大为512，有些为1024.
-	size_t num_blocks = (N - 1) / block_size + 1;
+	size_t num_blocks = (N / block_size) + ((N%block_size) ? 1 : 0);
 	// allocate space to hold one partial sum per block, plus one additional
 	// slot to store the total sum
-	double *d_partial_sums_and_total;//一个线程块一个和，另外加一个元素，存放所有线程块的和。
-	checkCudaErrors(cudaMalloc((void**)&d_partial_sums_and_total, sizeof(double) * (num_blocks + 1)));
+	float *d_partial_sums_and_total;//一个线程块一个和，另外加一个元素，存放所有线程块的和。
+	checkCudaErrors(cudaMalloc((void**)&d_partial_sums_and_total, sizeof(float) * (num_blocks + 1)));
 
 	// launch one kernel to compute, per-block, a partial sum//把每个线程块的和求出来
-	block_sum << <num_blocks, block_size, block_size * sizeof(double) >> >(d_input, d_partial_sums_and_total, N);
-	//cudaDeviceSynchronize();
+	block_sum << <num_blocks, block_size, block_size * sizeof(float) >> >(d_input, d_partial_sums_and_total, N);
+	cudaDeviceSynchronize();
+	cudaFree(d_input);
 	// launch a single block to compute the sum of the partial sums
 	//再次用一个线程块把上一步的结果求和。
 	//注意这里有个限制，上一步线程块的数量，必须不大于一个线程块线程的最大数量，因为这一步得把上一步的结果放在一个线程块操作。
 	//即num_blocks不能大于线程块的最大线程数量。
+	float *b = new float[num_blocks];
+	checkCudaErrors(cudaMemcpy(b, d_partial_sums_and_total, num_blocks*sizeof(float), cudaMemcpyDeviceToHost));	//从累加过后数组的0号元素得出结果
+	float a = 0;
+	for (int i = 0; i < num_blocks; ++i)
+		a += b[i];
+	delete[]b;
 	int new_blocks = pow(2, ceil(log2(num_blocks)));
 
-	block_sum << <1, new_blocks, new_blocks * sizeof(double) >> >(d_partial_sums_and_total, d_partial_sums_and_total + num_blocks, num_blocks);
-	//cudaDeviceSynchronize();
+	block_sum << <1, new_blocks, new_blocks * sizeof(float) >> >(d_partial_sums_and_total, d_partial_sums_and_total + num_blocks, num_blocks);
+	cudaDeviceSynchronize();
 
-	double d_ParaSum;
-	checkCudaErrors(cudaMemcpy(&d_ParaSum, d_partial_sums_and_total + num_blocks, sizeof(double), cudaMemcpyDeviceToHost));	//从累加过后数组的0号元素得出结果
+	float d_ParaSum;
+	checkCudaErrors(cudaMemcpy(&d_ParaSum, d_partial_sums_and_total + num_blocks, sizeof(float), cudaMemcpyDeviceToHost));	//从累加过后数组的0号元素得出结果
 	endTime = clock();//计时结束
-	cout << "GPU run time is: " << (double)(endTime - startTime) / CLOCKS_PER_SEC << "s" << endl;
+	cout << "GPU run time is: " << (float)(endTime - startTime) / CLOCKS_PER_SEC << "s" << endl;
 	cout << " GPU result = " << d_ParaSum << endl;	//显示GPU端结果
-
-	cudaFree(d_input);
+	
+	cudaFree(d_partial_sums_and_total);
 	delete[]pcpu;
 }
