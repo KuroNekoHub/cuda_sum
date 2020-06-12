@@ -91,10 +91,10 @@ void ParallelTest()
 		std::cout << "======================================================" << std::endl;
 	}
 
-	float *pcpu = new float[N];
+	float *in = new float[N];
 	for (size_t i = 0; i<N; i++)
 	{
-		pcpu[i] = 1.0;	//数组赋值
+		in[i] = 1.0;	//数组赋值
 	}
 	//CPU
 	clock_t startTime, endTime;
@@ -102,7 +102,7 @@ void ParallelTest()
 	double ParaSum = 0;
 	for (size_t i = 0; i<N; i++)
 	{
-		ParaSum += pcpu[i];	//CPU端数组累加
+		ParaSum += in[i];	//CPU端数组累加
 	}
 	endTime = clock();//计时结束
 	cout << "CPU run time is: " << (float)(endTime - startTime) / CLOCKS_PER_SEC << "s" << endl;
@@ -110,51 +110,48 @@ void ParallelTest()
 
 	//GPU
 	startTime = clock();//计时开始
-	float *d_input;
-	checkCudaErrors(cudaMalloc((void **)&d_input, sizeof(float) * N));
-	checkCudaErrors(cudaMemcpy(d_input, pcpu, N * sizeof(float), cudaMemcpyHostToDevice));
-	delete[]pcpu;
 
 	size_t block_size = 1024;//线程块的大小。目前有些gpu的线程块最大为512，有些为1024.
-	size_t num_blocks = (N / block_size) + ((N%block_size) ? 1 : 0);
-	size_t it = 0, len = num_blocks, plusBlocks = 0;
-	vector<size_t> vBlocks, vN;
-	while (len > block_size){
+	size_t num_blocks = N;
+	size_t it = 0, plusBlocks = 0;
+	vector<size_t> vBlocks, vLen, vBlockSize;
+	while (num_blocks > block_size){
 		++it;
-		vN.push_back(len);
-		len = ((len / block_size) + ((len%block_size) ? 1 : 0));
-		plusBlocks += len;
-		vBlocks.push_back(len);
+		vLen.push_back(num_blocks);
+		num_blocks = ((num_blocks / block_size) + ((num_blocks%block_size) ? 1 : 0));
+		plusBlocks += num_blocks;
+		vBlocks.push_back(num_blocks);
+		vBlockSize.push_back(block_size);
 	}
-	
-	
+	//final operation
+	vBlocks.push_back(1);
+	vLen.push_back(num_blocks);
+	++it;
+	vBlockSize.push_back(pow(2, ceil(log2(vBlocks[vBlocks.size() - 2]))));
+
 	// allocate space to hold one partial sum per block, plus one additional
 	// slot to store the total sum
 	float *d_partial_sums_and_total;//一个线程块一个和，另外加一个元素，存放所有线程块的和。
-	checkCudaErrors(cudaMalloc((void**)&d_partial_sums_and_total, sizeof(float) * (num_blocks + 1 + plusBlocks)));
+	checkCudaErrors(cudaMalloc((void**)&d_partial_sums_and_total, sizeof(float) * (N + plusBlocks + 1)));
+	checkCudaErrors(cudaMemcpy(d_partial_sums_and_total, in, N * sizeof(float), cudaMemcpyHostToDevice));
 
-	// launch one kernel to compute, per-block, a partial sum//把每个线程块的和求出来
-	block_sum << <num_blocks, block_size, block_size * sizeof(float) >> >(d_input, d_partial_sums_and_total, N);
-	cudaFree(d_input);
-
-	// launch a single block to compute the sum of the partial sums
-	size_t num = vN.size();
-	float *start = d_partial_sums_and_total, *end = d_partial_sums_and_total + num_blocks;
+	delete[]in;
+	
+	// launch sevral blocks to compute the sum of the partial sums
+	size_t total = vLen.size();
+	float *start = d_partial_sums_and_total, *end = d_partial_sums_and_total+ vLen[0];
 	while (it){
-		size_t blocks = vBlocks[num - it];
-		size_t n = vN[num - it];
-		block_sum << <blocks, block_size, block_size * sizeof(float) >> >(start, end, n);
-
+		size_t block_nums = vBlocks[total - it];
+		size_t len = vLen[total - it];
+		size_t thread_nums = vBlockSize[total - it];
+		block_sum << <block_nums, thread_nums, thread_nums * sizeof(float) >> >(start, end, len);
 		start = end;
-		end = end + blocks;
+		end = end + block_nums;
 		--it;
 	}
 
-	size_t new_blocks = pow(2, ceil(log2(vBlocks[vBlocks.size() - 1])));
-	block_sum << <1, new_blocks, new_blocks * sizeof(float) >> >(start, end, vBlocks[vBlocks.size()-1]);
-
 	float d_ParaSum;
-	checkCudaErrors(cudaMemcpy(&d_ParaSum, d_partial_sums_and_total + num_blocks + plusBlocks, sizeof(float), cudaMemcpyDeviceToHost));	//从累加过后数组的0号元素得出结果
+	checkCudaErrors(cudaMemcpy(&d_ParaSum, d_partial_sums_and_total + plusBlocks + N, sizeof(float), cudaMemcpyDeviceToHost));	//从累加过后数组的0号元素得出结果
 	cudaFree(d_partial_sums_and_total);
 
 	endTime = clock();//计时结束
